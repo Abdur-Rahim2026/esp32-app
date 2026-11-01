@@ -1,0 +1,9 @@
+{
+  "name": "ESP32 BLE Terminal",
+  "short_name": "ESP32 BLE",
+  "start_url": "index.html",
+  "display": "standalone",
+  "background_color": "#f4f4f9",
+  "theme_color": "#007bff",
+  "orientation": "portrait"
+}

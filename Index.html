@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32 BLE Controller</title>
+    <!-- Links to the manifest file that makes this a standalone PWA app -->
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#007bff">
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            margin: 20px;
+            background-color: #f4f4f9;
+            color: #333;
+        }
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            font-size: 16px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover { background-color: #0056b3; }
+        button:disabled { background-color: #cccccc; cursor: not-allowed; }
+        
+        #connectBtn { width: 100%; margin-bottom: 15px; }
+        
+        #status { font-weight: bold; margin-bottom: 15px; }
+        .disconnected { color: #dc3545; }
+        .connecting { color: #ffc107; }
+        .connected { color: #28a745; }
+        
+        .send-box {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        input[type="text"] {
+            flex: 1;
+            padding: 10px;
+            font-size: 16px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        
+        #terminal {
+            background-color: #1e1e1e;
+            color: #00ff00;
+            font-family: 'Courier New', Courier, monospace;
+            padding: 15px;
+            height: 250px;
+            overflow-y: auto;
+            border-radius: 4px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>ESP32 BLE Controller App</h2>
+    <button id="connectBtn">Connect to ESP32</button>
+    <div id="status">Status: <span class="disconnected">Disconnected</span></div>
+    
+    <div class="send-box">
+        <input type="text" id="sendInput" placeholder="Type data to send to ESP32..." disabled>
+        <button id="sendBtn" disabled>Send</button>
+    </div>
+
+    <div id="terminal">--- Terminal Ready ---&#10;</div>
+</div>
+
+<script>
+    const SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e'; 
+    const TX_CHARACTERISTIC_UUID = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; // Web Receives
+    const RX_CHARACTERISTIC_UUID = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; // Web Sends
+
+    const connectBtn = document.getElementById('connectBtn');
+    const sendBtn = document.getElementById('sendBtn');
+    const sendInput = document.getElementById('sendInput');
+    const statusEl = document.getElementById('status');
+    const terminal = document.getElementById('terminal');
+
+    let bluetoothDevice = null;
+    let txCharacteristic = null;
+    let rxCharacteristic = null;
+
+    connectBtn.addEventListener('click', async () => {
+        if (!navigator.bluetooth) {
+            log("Error: Web Bluetooth is not supported.");
+            return;
+        }
+
+        try {
+            updateStatus("Connecting...", "connecting");
+            log("Requesting Bluetooth Device...");
+            
+            bluetoothDevice = await navigator.bluetooth.requestDevice({
+                filters: [{ services: [SERVICE_UUID] }]
+            });
+
+            log("Connecting to GATT Server...");
+            const server = await bluetoothDevice.gatt.connect();
+
+            log("Getting Service...");
+            const service = await server.getPrimaryService(SERVICE_UUID);
+
+            log("Getting TX Characteristic...");
+            txCharacteristic = await service.getCharacteristic(TX_CHARACTERISTIC_UUID);
+            
+            log("Getting RX Characteristic...");
+            rxCharacteristic = await service.getCharacteristic(RX_CHARACTERISTIC_UUID);
+
+            log("Starting Notifications...");
+            await txCharacteristic.startNotifications();
+            txCharacteristic.addEventListener('characteristicvaluechanged', handleDataReceived);
+
+            updateStatus("Connected", "connected");
+            connectBtn.disabled = true;
+            sendBtn.disabled = false;
+            sendInput.disabled = false;
+            
+            bluetoothDevice.addEventListener('gattserverdisconnected', onDisconnected);
+
+        } catch (error) {
+            log("Error: " + error);
+            updateStatus("Disconnected", "disconnected");
+        }
+    });
+
+    // Send data to ESP32
+    sendBtn.addEventListener('click', async () => {
+        const text = sendInput.value;
+        if (!text || !rxCharacteristic) return;
+
+        try {
+            const encoder = new TextEncoder();
+            const data = encoder.encode(text);
+            
+            await rxCharacteristic.writeValue(data);
+            log(`> Sent to ESP32: ${text}`);
+            sendInput.value = ''; 
+        } catch (error) {
+            log("Error sending data: " + error);
+        }
+    });
+
+    sendInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') sendBtn.click();
+    });
+
+    function handleDataReceived(event) {
+        const value = event.target.value;
+        const decoder = new TextDecoder('utf-8');
+        const text = decoder.decode(value);
+        log(text, false);
+    }
+
+    function onDisconnected() {
+        updateStatus("Disconnected", "disconnected");
+        connectBtn.disabled = false;
+        sendBtn.disabled = true;
+        sendInput.disabled = true;
+        log("\n--- Device Disconnected ---");
+    }
+
+    function updateStatus(text, className) {
+        statusEl.innerHTML = `Status: <span class="${className}">${text}</span>`;
+    }
+
+    function log(message, addNewline = true) {
+        terminal.textContent += message + (addNewline ? "\n" : "");
+        terminal.scrollTop = terminal.scrollHeight;
+    }
+
+    // Registering the blank Service Worker required to unlock app installation
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('sw.js')
+            .then(() => console.log("Service Worker Registered Succesfully!"))
+            .catch((err) => console.log("Service Worker Failed: ", err));
+    }
+</script>
+
+</body>
+</html>
